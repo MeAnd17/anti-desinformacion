@@ -1,0 +1,345 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Tucuy</title>
+  <style>
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    body {
+      width: 360px;
+      min-height: 480px;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: #0f0f1a;
+      color: #e8e8f0;
+    }
+
+    /* Header */
+    .header {
+      background: linear-gradient(135deg, #1a1a3e 0%, #16213e 100%);
+      padding: 16px 18px 14px;
+      border-bottom: 1px solid #2a2a4e;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .header-icon {
+      font-size: 24px;
+      line-height: 1;
+    }
+    .header-text h1 {
+      font-size: 15px;
+      font-weight: 700;
+      color: #ffffff;
+      letter-spacing: 0.3px;
+    }
+    .header-text p {
+      font-size: 11px;
+      color: #8888aa;
+      margin-top: 2px;
+    }
+
+    /* Indicador de estado del backend */
+    .status-bar {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 8px 18px;
+      background: #13132a;
+      font-size: 11px;
+      color: #8888aa;
+      border-bottom: 1px solid #1e1e3a;
+    }
+    .status-dot {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: #555;
+      flex-shrink: 0;
+    }
+    .status-dot.online   { background: #43a047; box-shadow: 0 0 6px #43a047; }
+    .status-dot.offline  { background: #e53935; box-shadow: 0 0 6px #e53935; }
+    .status-dot.checking { background: #f9a825; animation: pulse 1s infinite; }
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50%       { opacity: 0.3; }
+    }
+
+    /* Tabs */
+    .tabs {
+      display: flex;
+      background: #13132a;
+      border-bottom: 1px solid #1e1e3a;
+    }
+    .tab-btn {
+      flex: 1;
+      padding: 10px 4px;
+      background: none;
+      border: none;
+      color: #6666aa;
+      font-size: 11px;
+      cursor: pointer;
+      transition: all 0.2s;
+      border-bottom: 2px solid transparent;
+      font-weight: 500;
+    }
+    .tab-btn:hover { color: #aaaacc; }
+    .tab-btn.active {
+      color: #7c83ff;
+      border-bottom-color: #7c83ff;
+      background: rgba(124, 131, 255, 0.05);
+    }
+
+    /* Área principal */
+    .main {
+      padding: 16px 18px;
+    }
+
+    .tab-panel { display: none; }
+    .tab-panel.active { display: block; }
+
+    label {
+      display: block;
+      font-size: 12px;
+      color: #8888aa;
+      margin-bottom: 6px;
+      font-weight: 500;
+    }
+
+    textarea, input[type="text"] {
+      width: 100%;
+      background: #1a1a30;
+      border: 1px solid #2a2a4e;
+      border-radius: 8px;
+      color: #e8e8f0;
+      font-size: 13px;
+      padding: 10px 12px;
+      resize: vertical;
+      outline: none;
+      transition: border-color 0.2s;
+      font-family: inherit;
+    }
+    textarea { min-height: 90px; }
+    textarea:focus, input[type="text"]:focus { border-color: #7c83ff; }
+    textarea::placeholder, input::placeholder { color: #44445a; }
+
+    /* Zona de subida de imagen */
+    .image-drop-zone {
+      width: 100%;
+      min-height: 90px;
+      border: 2px dashed #2a2a4e;
+      border-radius: 8px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      cursor: pointer;
+      transition: border-color 0.2s, background 0.2s;
+      background: #1a1a30;
+      color: #6666aa;
+      font-size: 12px;
+      padding: 14px;
+      text-align: center;
+    }
+    .image-drop-zone:hover,
+    .image-drop-zone.dragover {
+      border-color: #7c83ff;
+      background: rgba(124, 131, 255, 0.05);
+    }
+    .image-drop-zone .drop-icon { font-size: 26px; line-height: 1; }
+    .image-drop-zone.has-image {
+      border-color: #43a047;
+      background: rgba(67, 160, 71, 0.07);
+      color: #aaffaa;
+    }
+    #imagePreview {
+      max-width: 100%;
+      max-height: 120px;
+      border-radius: 6px;
+      display: none;
+      margin-top: 8px;
+    }
+    #imagePreview.visible { display: block; }
+
+    /* Botón analizar */
+    .btn-analyze {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 7px;
+      width: 100%;
+      margin-top: 12px;
+      padding: 11px;
+      background: linear-gradient(135deg, #5c6bc0, #7c83ff);
+      border: none;
+      border-radius: 8px;
+      color: #ffffff;
+      font-size: 14px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: opacity 0.2s, transform 0.1s;
+    }
+    .btn-analyze:hover  { opacity: 0.9; }
+    .btn-analyze:active { transform: scale(0.98); }
+    .btn-analyze:disabled { opacity: 0.5; cursor: not-allowed; }
+
+    /* Resultado */
+    .result-area { margin-top: 14px; display: none; }
+    .result-area.visible { display: block; }
+
+    .result-card {
+      border-radius: 10px;
+      padding: 14px 16px;
+      font-size: 13px;
+      line-height: 1.7;
+      border-left: 4px solid #555;
+      background: #1a1a30;
+    }
+    .result-card.riesgo-alto     { border-left-color: #e53935; background: rgba(229,57,53,0.08); }
+    .result-card.riesgo-medio    { border-left-color: #f9a825; background: rgba(249,168,37,0.08); }
+    .result-card.riesgo-bajo     { border-left-color: #43a047; background: rgba(67,160,71,0.08); }
+    .result-card.riesgo-incierto { border-left-color: #7c83ff; background: rgba(124,131,255,0.08); }
+    .result-card.loading         { border-left-color: #7c83ff; }
+
+    .result-risk-label {
+      font-weight: 700;
+      font-size: 13px;
+      margin-bottom: 6px;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .result-message {
+      color: #ccccdd;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+    .result-message strong { color: #ffffff; }
+
+    /* Spinner */
+    .spinner {
+      display: inline-block;
+      width: 14px; height: 14px;
+      border: 2px solid rgba(255,255,255,0.3);
+      border-top-color: #fff;
+      border-radius: 50%;
+      animation: spin 0.7s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+  </style>
+</head>
+<body>
+
+  <!-- Header -->
+  <div class="header">
+    <span class="header-icon">🛡️</span>
+    <div class="header-text">
+      <h1>Tucuy</h1>
+      <p>Verifica texto, enlaces e imágenes</p>
+    </div>
+  </div>
+
+  <!-- Estado del servidor -->
+  <div class="status-bar">
+    <span class="status-dot checking" id="statusDot"></span>
+    <span id="statusText">Verificando conexión...</span>
+  </div>
+
+  <!-- Tabs -->
+  <div class="tabs">
+    <button class="tab-btn active" data-tab="texto">📝 Texto</button>
+    <button class="tab-btn"        data-tab="url">🔗 Enlace</button>
+    <button class="tab-btn"        data-tab="imagen">🖼️ Imagen</button>
+    <button class="tab-btn"        data-tab="completo">🔍 Todo</button>
+  </div>
+
+  <!-- Contenido principal -->
+  <div class="main">
+
+    <!-- Tab: Texto -->
+    <div class="tab-panel active" id="panel-texto">
+      <label for="inputTexto">Pega el mensaje o noticia que deseas verificar:</label>
+      <textarea
+        id="inputTexto"
+        placeholder="Ej: El gobierno peruano oculta la cura del COVID-19..."
+        maxlength="2000"
+      ></textarea>
+      <button class="btn-analyze" id="btnTexto">
+        <span>🔍</span> Analizar texto
+      </button>
+    </div>
+
+    <!-- Tab: URL -->
+    <div class="tab-panel" id="panel-url">
+      <label for="inputUrl">Pega el enlace (URL) que deseas verificar:</label>
+      <input
+        type="text"
+        id="inputUrl"
+        placeholder="Ej: https://bcp-descuentos.com/oferta"
+      />
+      <button class="btn-analyze" id="btnUrl">
+        <span>🔗</span> Verificar enlace
+      </button>
+    </div>
+
+    <!-- Tab: Imagen -->
+    <div class="tab-panel" id="panel-imagen">
+      <label>Sube o arrastra una imagen para analizarla:</label>
+
+      <!-- Input file oculto -->
+      <input type="file" id="inputFile" accept="image/*" style="display:none" />
+
+      <!-- Zona de drop / clic -->
+      <div class="image-drop-zone" id="dropZone">
+        <span class="drop-icon">🖼️</span>
+        <span id="dropLabel">Haz clic o arrastra una imagen aquí</span>
+        <span style="font-size:10px; color:#44445a;">PNG, JPG, WEBP — máx. 5MB</span>
+      </div>
+
+      <!-- Preview -->
+      <img id="imagePreview" alt="Vista previa" />
+
+      <button class="btn-analyze" id="btnImagen" disabled>
+        <span>🔍</span> Analizar imagen
+      </button>
+    </div>
+
+    <!-- Tab: Completo -->
+    <div class="tab-panel" id="panel-completo">
+      <label for="inputTextoFull">Texto del mensaje (opcional):</label>
+      <textarea
+        id="inputTextoFull"
+        placeholder="Pega aquí el texto..."
+        style="min-height: 60px;"
+        maxlength="2000"
+      ></textarea>
+      <label for="inputUrlFull" style="margin-top: 10px;">Enlace del mensaje (opcional):</label>
+      <input
+        type="text"
+        id="inputUrlFull"
+        placeholder="https://..."
+      />
+      <button class="btn-analyze" id="btnFull">
+        <span>🔍</span> Análisis completo
+      </button>
+    </div>
+
+    <!-- Resultado compartido -->
+    <div class="result-area" id="resultArea">
+      <div class="result-card" id="resultCard">
+        <div class="result-risk-label" id="resultRiskLabel"></div>
+        <div class="result-message"    id="resultMessage"></div>
+      </div>
+    </div>
+
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>

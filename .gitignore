@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+dist/
+build/
+.pytest_cache/
+
+# Variables de entorno (no subir secretos)
+.env
+*.env
+
+# WhatsApp bot - sesión local
+whatsapp-bot/.wwebjs_auth/
+whatsapp-bot/.wwebjs_cache/
+whatsapp-bot/node_modules/
+
+# Node
+node_modules/
+npm-debug.log*
+
+# macOS
+.DS_Store
