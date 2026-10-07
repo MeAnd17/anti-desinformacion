@@ -28,7 +28,7 @@ except ImportError:
             prev = curr
         return prev[-1]
 
-from data.dominios_legitimos import DOMINIOS_LEGITIMOS
+from data.dominios_legitimos import DOMINIOS_LEGITIMOS, DOMINIOS_BLACKLIST, BLACKLIST_REASONS, BLACKLIST_DEFAULT_REASON
 
 # Umbral de similitud: si similaridad >= este valor Y no es exacto → sospechoso
 SIMILARITY_THRESHOLD = 0.70
@@ -134,6 +134,63 @@ def _map_risk_level(is_suspicious: bool, similarity: float) -> str:
     return "bajo"
 
 
+def _check_blacklist(domain: str) -> dict | None:
+    """
+    Verifica si el dominio está en la lista negra.
+    Estrategias en orden:
+      1. Dominio exacto y subdominios (ej: sub.cuevana3.io → cuevana3.io)
+      2. Palabras clave en el dominio (ej: cuevana3k.pro → contiene 'cuevana')
+
+    Retorna un dict con el resultado si está en la lista negra, o None si no.
+    """
+    # Estrategia 1: dominio exacto y subdominios
+    parts = domain.split(".")
+    for i in range(len(parts) - 1):
+        candidate = ".".join(parts[i:])
+        if candidate in DOMINIOS_BLACKLIST:
+            reason = BLACKLIST_REASONS.get(candidate, BLACKLIST_DEFAULT_REASON)
+            return {
+                "matched_blacklist_domain": candidate,
+                "reason": reason,
+            }
+
+    # Estrategia 2: palabras clave — detecta variantes con TLD diferente
+    # Ej: cuevana3k.pro, pelisplus2.net, repelis24.org, magistv2.app
+    _KEYWORD_RULES = {
+        "cuevana":      "Sitio de streaming pirata — variante de Cuevana (dominio cambiante)",
+        "pelisplus":    "Sitio de streaming pirata — variante de PelisPlus",
+        "repelis":      "Sitio de streaming pirata — variante de Repelis",
+        "gnula":        "Sitio de streaming pirata — variante de Gnula",
+        "seriesflix":   "Sitio de streaming pirata — variante de SeriesFlix",
+        "cinecalidad":  "Sitio de streaming pirata — variante de CineCalidad",
+        "magistv":      "Plataforma IPTV pirata — variante de MagisTV",
+        "xupermovil":   "Plataforma IPTV pirata — variante de XuperTV",
+        "xupertvapp":   "Plataforma IPTV pirata — variante de XuperTV",
+        "flujotv":      "Plataforma IPTV pirata — variante de FlujoTV",
+        "animeflv":     "Sitio de anime pirata — variante de AnimeFLV",
+        "doramasyt":    "Sitio de doramas pirata — contenido sin licencia",
+        "animesuma":    "Sitio de anime pirata — contenido sin licencia",
+        "animelatino":  "Sitio de anime pirata — contenido sin licencia",
+        "bcpzonasegura":"Sitio de phishing — suplanta al BCP",
+        "yapebono":     "Sitio de phishing — suplanta a Yape con falsas promociones",
+        "yapegana":     "Sitio de phishing — suplanta a Yape con falsas promociones",
+        "sunatconsulta":"Sitio de phishing — suplanta a SUNAT",
+        "reniecconsu":  "Sitio de phishing — suplanta a RENIEC",
+    }
+
+    # Normalizar dominio: quitar guiones y números para comparar
+    domain_clean = domain.replace("-", "").replace(".", "")
+
+    for keyword, reason in _KEYWORD_RULES.items():
+        if keyword in domain_clean:
+            return {
+                "matched_blacklist_domain": domain,
+                "reason": reason,
+            }
+
+    return None
+
+
 def analyze_url(url: str) -> dict:
     """
     Analiza una URL y detecta si es un intento de typosquatting
@@ -178,7 +235,48 @@ def analyze_url(url: str) -> dict:
             "error": "No se pudo extraer el dominio",
         }
 
-    # Comparar contra todos los dominios legítimos
+    # -----------------------------------------------------------------------
+    # Paso 1: verificar lista negra ANTES del análisis Levenshtein
+    # -----------------------------------------------------------------------
+    blacklist_match = _check_blacklist(domain)
+    if blacklist_match:
+        return {
+            "original_url": url,
+            "extracted_domain": domain,
+            "is_suspicious": True,
+            "closest_domain": blacklist_match["matched_blacklist_domain"],
+            "similarity": 1.0,
+            "risk_level": "alto",
+            "source": "blacklist",
+            "blacklist_reason": blacklist_match["reason"],
+        }
+
+    # -----------------------------------------------------------------------
+    # Paso 2: verificar fuentes externas (Safe Browsing, URLhaus, OpenPhish, PhishTank)
+    # -----------------------------------------------------------------------
+    try:
+        from modules.url_checker import check_url_external
+        external = check_url_external(url)
+        if external.get("is_malicious"):
+            return {
+                "original_url": url,
+                "extracted_domain": domain,
+                "is_suspicious": True,
+                "closest_domain": None,
+                "similarity": 0.0,
+                "risk_level": external.get("risk_level", "alto"),
+                "source": "external",
+                "external_detections": external.get("detections", []),
+                "external_sources":    external.get("sources_checked", []),
+                "external_reasons":    external.get("reasons", []),
+            }
+    except Exception as e:
+        # Si falla la consulta externa, continuar con Levenshtein
+        pass
+
+    # -----------------------------------------------------------------------
+    # Paso 3: comparar contra dominios legítimos peruanos (typosquatting)
+    # -----------------------------------------------------------------------
     best_similarity = 0.0
     best_match = None
 

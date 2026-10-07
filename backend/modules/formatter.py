@@ -207,6 +207,56 @@ def format_response(analysis_result: dict, channel: str = "whatsapp") -> str:
         confidence = int(nlp.get("confidence", 0) * 100)
         return templates[risk_level]["fake_news"].format(confidence=confidence)
 
+    # --- Detección por fuentes externas (Safe Browsing, URLhaus, OpenPhish, PhishTank) ---
+    if source == "external":
+        extracted   = analysis_result.get("extracted_domain", "dominio desconocido")
+        reasons     = analysis_result.get("external_reasons", [])
+        detections  = analysis_result.get("external_detections", [])
+        sources     = analysis_result.get("external_sources", [])
+
+        # Fuente con mayor prioridad para el mensaje principal
+        source_priority = ["google_safe_browsing", "urlhaus", "phishtank", "openphish"]
+        main_detection  = next(
+            (d for s in source_priority for d in detections if d.get("source") == s),
+            detections[0] if detections else {},
+        )
+        main_reason = main_detection.get("reason", reasons[0] if reasons else "Detectado como peligroso por fuentes externas")
+
+        if channel == "whatsapp":
+            sources_str = ", ".join(s.replace("_", " ").title() for s in sources if any(d.get("source") == s for d in detections))
+            return (
+                f"🔴 *¡ENLACE PELIGROSO!* Detectado por {sources_str or 'servicios de seguridad'}.\n\n"
+                f"⚠️ {main_reason}\n\n"
+                f"🌐 Dominio: `{extracted}`\n\n"
+                f"👉 *No hagas clic* en este enlace ni compartas esta URL."
+            )
+        else:
+            return (
+                f"⚠️ RIESGO ALTO: URL detectada como peligrosa. "
+                f"{main_reason}. "
+                f"Dominio: '{extracted}'. "
+                f"No accedas a este sitio."
+            )
+
+    # --- Dominio en lista negra ---
+    if source == "blacklist":
+        reason = analysis_result.get("blacklist_reason", "Dominio no confiable o peligroso")
+        extracted = analysis_result.get("extracted_domain", "dominio desconocido")
+        if channel == "whatsapp":
+            return (
+                f"🔴 *¡SITIO NO CONFIABLE!*\n\n"
+                f"El dominio *{extracted}* está identificado como peligroso.\n\n"
+                f"⚠️ Motivo: {reason}\n\n"
+                f"👉 *No ingreses a este sitio* ni compartas el enlace."
+            )
+        else:
+            return (
+                f"⚠️ RIESGO ALTO: Sitio no confiable detectado. "
+                f"Dominio: '{extracted}'. "
+                f"Motivo: {reason}. "
+                f"No ingreses a este sitio."
+            )
+
     # --- Análisis de URL / Levenshtein puro ---
     if source == "levenshtein" or (
         "url_analysis" in analysis_result and "nlp" not in analysis_result
@@ -215,6 +265,23 @@ def format_response(analysis_result: dict, channel: str = "whatsapp") -> str:
             analysis_result if source == "levenshtein"
             else analysis_result.get("url_analysis", {})
         )
+        # Si la URL viene de blacklist dentro de un análisis full
+        if url_data.get("source") == "blacklist":
+            reason = url_data.get("blacklist_reason", "Dominio no confiable o peligroso")
+            extracted = url_data.get("extracted_domain", "dominio desconocido")
+            if channel == "whatsapp":
+                return (
+                    f"🔴 *¡SITIO NO CONFIABLE!*\n\n"
+                    f"El dominio *{extracted}* está identificado como peligroso.\n\n"
+                    f"⚠️ Motivo: {reason}\n\n"
+                    f"👉 *No ingreses a este sitio* ni compartas el enlace."
+                )
+            else:
+                return (
+                    f"⚠️ RIESGO ALTO: Sitio no confiable. "
+                    f"Dominio: '{extracted}'. "
+                    f"Motivo: {reason}."
+                )
         return templates[risk_level]["typosquatting"].format(
             closest_domain=url_data.get("closest_domain", "sitio oficial"),
             extracted_domain=url_data.get("extracted_domain", "dominio desconocido"),
@@ -274,7 +341,18 @@ def _build_detail(result: dict, channel: str) -> str:
 
     if "url_analysis" in result:
         url_data = result["url_analysis"]
-        if url_data.get("is_suspicious"):
+        if url_data.get("source") == "external":
+            extracted = url_data.get("extracted_domain", "")
+            reasons   = url_data.get("external_reasons", [])
+            reason    = reasons[0] if reasons else "Detectado como peligroso por servicios externos"
+            prefix = "• 🌐" if channel == "whatsapp" else "•"
+            lines.append(f"{prefix} Fuentes externas: '{extracted}' — {reason}")
+        elif url_data.get("source") == "blacklist":
+            extracted = url_data.get("extracted_domain", "")
+            reason = url_data.get("blacklist_reason", "Dominio no confiable")
+            prefix = "• 🚫" if channel == "whatsapp" else "•"
+            lines.append(f"{prefix} Sitio en lista negra: '{extracted}' — {reason}")
+        elif url_data.get("is_suspicious"):
             closest = url_data.get("closest_domain", "")
             extracted = url_data.get("extracted_domain", "")
             prefix = "• 🔗" if channel == "whatsapp" else "•"
