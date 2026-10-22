@@ -10,7 +10,8 @@
 **Canales de acceso:** Extensión de Chrome (publicada en Chrome Web Store), Bot de WhatsApp, API REST  
 **Backend:** FastAPI (Python) desplegado en Render — `https://tucuy-backend.onrender.com`  
 **Modelo NLP base:** `Narrativaai/fake-news-detection-spanish` (RoBERTa-large fine-tuned, 77.97% accuracy)  
-**Modelo NLP propio:** `analuciahm/tucuy-fake-news-spanish` (fine-tuned con corpus FakeDeS, en proceso de evaluación)  
+**Modelo NLP propio:** `analuciahm/tucuy-fake-news-spanish` (fine-tuned con corpus FakeDeS sobre PlanTL-GOB-ES/roberta-large-bne)  
+**Modelo NLP producción:** `analuciahm/tucuy-fake-news-spanish-onnx` (cuantizado int8, 119MB, desplegado en Render free)  
 **Fact-checking:** Google Fact Check Tools API + fallback DuckDuckGo  
 **OCR:** OCR.space API  
 **Detección de URLs:** Levenshtein + blacklist interna + Google Safe Browsing + URLhaus + OpenPhish + PhishTank  
@@ -59,33 +60,30 @@
 Clasifica un texto en español como FAKE (desinformación) o REAL (legítimo) usando RoBERTa fine-tuned para español.
 
 ### Modelo
-- **Base:** `Narrativaai/fake-news-detection-spanish` — RoBERTa-large-bne fine-tuned sobre el corpus FakeDeS (IberLEF 2021). Accuracy 77.97%, F1 77.17% sobre el set de evaluación.
-- **Propio:** `analuciahm/tucuy-fake-news-spanish` — fine-tuning adicional sobre el mismo corpus con hiperparámetros optimizados para el contexto del sistema.
-- **Dataset:** Spanish Fake News Corpus v1.0 (Posadas-Durán et al., 2019) — 676 noticias train, 295 test, balanceado 50/50 entre Fake y True, 9 categorías temáticas.
+- **Base de referencia:** `Narrativaai/fake-news-detection-spanish` — RoBERTa-large-bne fine-tuned sobre corpus FakeDeS (IberLEF 2021). Accuracy 77.97%, F1 77.17%. No es nuestro modelo, sirve como baseline de comparación.
+- **Modelo propio:** `analuciahm/tucuy-fake-news-spanish` — entrenado desde `PlanTL-GOB-ES/roberta-large-bne` (modelo base sin fine-tuning previo) sobre el mismo corpus FakeDeS, con hiperparámetros optimizados y combinando Headline + Text como entrada.
+- **Modelo en producción:** `analuciahm/tucuy-fake-news-spanish-onnx` — versión ONNX cuantizada (int8) del modelo propio. Pesa 119MB, carga con `onnxruntime` sin necesidad de torch, cabe en los 512MB de RAM de Render free.
+- **Dataset:** Spanish Fake News Corpus v1.0 (Posadas-Durán et al., 2019) — 676 noticias train, 295 test, balanceado 50/50, 9 categorías temáticas, español mexicano 2018.
 
-### Limitación de despliegue
-El modelo RoBERTa (~500MB) excede la RAM disponible en el plan gratuito de Render (512MB). En producción el NLP opera con un **clasificador heurístico** basado en palabras clave mientras se implementa la conversión a ONNX (~130MB). El modelo completo funciona en entorno local.
+### Limitación de despliegue resuelta
+El modelo RoBERTa original (~500MB) excedía la RAM del plan gratuito de Render (512MB). Se resolvió convirtiendo el modelo a formato ONNX con cuantización int8, reduciendo el tamaño de 499MB a **119MB**. Con `onnxruntime` como runtime (sin torch ni transformers completo), el modelo corre correctamente en Render free.
 
-### Trabajo futuro inmediato
-Convertir el modelo fine-tuned a formato ONNX con cuantización int8, reduciendo el tamaño a ~130MB para desplegarlo en Render free sin overhead de torch ni transformers.
-
-### Estrategia de inferencia (3 niveles en cascada)
+### Estrategia de inferencia (2 niveles en cascada)
 
 ```
 FUNCIÓN classify_text(texto):
     SI texto está vacío:
         RETORNAR {label: "REAL", confidence: 0.0, risk_level: "bajo"}
 
-    // Nivel 1: pipeline local con modelo RoBERTa (entorno local/GPU)
-    pipeline ← cargar_modelo_roberta_local()
+    // Nivel 1: modelo ONNX cuantizado (119MB, producción en Render)
+    pipeline ← cargar_modelo_onnx("analuciahm/tucuy-fake-news-spanish-onnx")
     SI pipeline disponible:
         resultado ← pipeline(texto[:2000])
         label     ← normalizar(resultado.label)
-            // LABEL_1, 1, FAKE, FALSO → "FAKE" / resto → "REAL"
         confianza ← resultado.score
-        RETORNAR {label, confidence, risk_level, inference: "local"}
+        RETORNAR {label, confidence, risk_level, inference: "onnx"}
 
-    // Nivel 2: fallback heurístico (producción Render free)
+    // Nivel 2: fallback heurístico
     RETORNAR fallback_heuristico(texto)
 ```
 
@@ -471,8 +469,8 @@ overlay flotante animado con resultado
 | OCR.space | ✅ Funcionando | Extracción de texto en español |
 | Levenshtein + Blacklist | ✅ Funcionando | Dominio peruano específico |
 | OpenPhish | ✅ Funcionando | Feed público, sin API key |
-| NLP (modelo completo) | ⚠️ Solo local | Excede 512MB RAM en Render free |
-| NLP (fallback heurístico) | ✅ Activo en Render | Palabras clave, menor precisión |
+| NLP (modelo ONNX 119MB) | ✅ Funcionando en Render | `analuciahm/tucuy-fake-news-spanish-onnx` |
+| NLP (fallback heurístico) | ✅ Activo como respaldo | Palabras clave, menor precisión |
 | Extensión Chrome | ✅ Publicada | Chrome Web Store, apunta a Render |
 | Bot WhatsApp | ✅ Funcional | Requiere escanear QR para activar |
 
@@ -532,7 +530,7 @@ anti-desinformacion/
 
 ## Decisiones de diseño relevantes para el paper
 
-1. **Fact-check como detector principal en producción**: dado que el modelo NLP completo no puede correr en el servidor gratuito, Google Fact Check actúa como detector primario. Cualquier afirmación verificada como FALSA por organizaciones periodísticas eleva directamente el risk_level, independientemente del NLP.
+1. **Modelo NLP propio con despliegue optimizado**: se entrenó un modelo RoBERTa desde el modelo base `PlanTL-GOB-ES/roberta-large-bne` sobre el corpus FakeDeS, evitando el overfitting que ocurre al hacer fine-tuning sobre un modelo ya entrenado en los mismos datos. El modelo resultante fue convertido a ONNX con cuantización int8 (499MB → 119MB), permitiendo su despliegue en infraestructura gratuita con 512MB de RAM usando `onnxruntime` como runtime liviano.
 
 2. **Retroalimentación sin intervención humana (Camino A)**: las etiquetas de entrenamiento provienen de fact-checkers internacionales, no de usuarios. Esto elimina el riesgo de envenenamiento del dataset y no requiere moderadores.
 
