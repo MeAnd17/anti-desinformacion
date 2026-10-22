@@ -40,43 +40,27 @@ _pipeline = None
 
 def _classify_via_api(text: str) -> Optional[dict]:
     """
-    Llama a la Hugging Face Inference API.
+    Llama a Hugging Face usando InferenceClient (nuevo sistema de providers).
     No requiere cargar el modelo en RAM local.
     """
-    headers = {}
-    if HF_TOKEN:
-        headers["Authorization"] = f"Bearer {HF_TOKEN}"
-
     try:
-        response = requests.post(
-            HF_API_URL,
-            headers=headers,
-            json={"inputs": text[:2000]},
-            timeout=TIMEOUT_SECS,
+        from huggingface_hub import InferenceClient
+
+        client = InferenceClient(
+            provider="hf-inference",
+            api_key=HF_TOKEN,
         )
 
-        if response.status_code == 503:
-            # Modelo dormido en HF — puede tardar unos segundos en despertar
-            logger.warning("[NLP] Modelo en HF está cargando, reintentando...")
-            import time
-            time.sleep(10)
-            response = requests.post(
-                HF_API_URL,
-                headers=headers,
-                json={"inputs": text[:2000]},
-                timeout=TIMEOUT_SECS,
-            )
+        result = client.text_classification(
+            text[:2000],
+            model=MODEL_NAME,
+        )
 
-        if response.status_code == 200:
-            data = response.json()
-            # La API devuelve [[{label, score}, ...]]
-            if isinstance(data, list) and len(data) > 0:
-                results = data[0] if isinstance(data[0], list) else data
-                best = max(results, key=lambda x: x["score"])
-                return best
-        else:
-            logger.warning(f"[NLP] HF API error {response.status_code}: {response.text[:200]}")
-            return None
+        # result es una lista de ClassificationOutput
+        if result:
+            best = max(result, key=lambda x: x.score)
+            return {"label": best.label, "score": best.score}
+        return None
 
     except Exception as e:
         logger.warning(f"[NLP] Error llamando HF API: {e}")
