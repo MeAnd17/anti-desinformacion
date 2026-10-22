@@ -8,8 +8,9 @@
  *   4. Actuar como puente de mensajes entre content.js y popup.js
  */
 
-const BACKEND_URL = "https://tucuy-backend.onrender.com";
-const TIMEOUT_MS  = 60000;
+const BACKEND_URL  = "https://tucuy-backend.onrender.com";
+const TIMEOUT_MS   = 60000;   // timeout general
+const TIMEOUT_NLP  = 120000;  // texto/NLP necesita más tiempo (carga el modelo)
 
 // ---------------------------------------------------------------------------
 // Comunicación con el backend
@@ -22,9 +23,9 @@ const TIMEOUT_MS  = 60000;
  * @param {object} data      - Cuerpo de la petición (JSON)
  * @returns {Promise<object>} - Respuesta del backend o error estandarizado
  */
-async function callAnalysisAPI(endpoint, data) {
+async function callAnalysisAPI(endpoint, data, timeoutMs = TIMEOUT_MS) {
   const controller = new AbortController();
-  const timerId = setTimeout(() => controller.abort(), TIMEOUT_MS);
+  const timerId = setTimeout(() => controller.abort(), timeoutMs);
 
   try {
     const response = await fetch(`${BACKEND_URL}${endpoint}`, {
@@ -134,7 +135,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 
   if (message.type === "ANALYZE_TEXT") {
-    callAnalysisAPI("/analyze/text", { text: message.text }).then(sendResponse);
+    callAnalysisAPI("/analyze/text", { text: message.text }, TIMEOUT_NLP).then(sendResponse);
     return true;
   }
 
@@ -144,7 +145,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 
   if (message.type === "ANALYZE_FULL") {
-    callAnalysisAPI("/analyze/full", message.data).then(sendResponse);
+    callAnalysisAPI("/analyze/full", message.data, TIMEOUT_NLP).then(sendResponse);
     return true;
   }
 });

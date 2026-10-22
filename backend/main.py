@@ -31,8 +31,22 @@ app = FastAPI(
 
 # Inicializar base de datos de muestras de entrenamiento al arrancar
 @app.on_event("startup")
-def startup_event():
+async def startup_event():
     init_db()
+    # Precalentar el modelo NLP para que la primera petición no tarde
+    import asyncio
+    asyncio.create_task(_warm_up_nlp())
+
+async def _warm_up_nlp():
+    """Carga el modelo NLP en background al arrancar el servidor."""
+    import asyncio
+    await asyncio.sleep(2)  # esperar que el servidor esté listo
+    try:
+        from modules.nlp import _get_pipeline
+        _get_pipeline()
+        print("[Startup] Modelo NLP precalentado correctamente.")
+    except Exception as e:
+        print(f"[Startup] No se pudo precalentar el modelo: {e}")
 
 # CORS — permite peticiones desde la extensión Chrome y el bot local
 app.add_middleware(
