@@ -8,10 +8,11 @@
 **Nombre del sistema:** Tucuy (del quechua: "todo", "completo")  
 **Objetivo:** Detectar desinformación digital, enlaces fraudulentos y noticias falsas dirigidas a ciudadanos de Lima Metropolitana, con énfasis en adultos mayores y personas con baja alfabetización digital.  
 **Canales de acceso:** Extensión de Chrome, Bot de WhatsApp, API REST  
-**Backend:** FastAPI (Python)  
-**Modelo NLP:** `Narrativaai/fake-news-detection-spanish` (RoBERTa fine-tuned para español)  
+**Backend:** FastAPI (Python) desplegado en Render  
+**URL producción:** `https://tucuy-backend.onrender.com`  
+**Modelo NLP:** `Narrativaai/fake-news-detection-spanish` (RoBERTa fine-tuned para español) via Hugging Face Inference API  
 **Fact-checking:** Google Fact Check Tools API + fallback DuckDuckGo  
-**OCR:** Tesseract con preprocesamiento Pillow  
+**OCR:** OCR.space API (servicio externo, sin instalación de Tesseract)  
 **Detección de URLs maliciosas:** Levenshtein + blacklist interna + 4 fuentes externas  
 
 ---
@@ -23,9 +24,9 @@
 │              CAPA DE PRESENTACIÓN                   │
 │   Extensión Chrome   Bot WhatsApp   API directa     │
 └──────────────────────┬──────────────────────────────┘
-                       │ HTTP REST
+                       │ HTTPS REST
 ┌──────────────────────▼──────────────────────────────┐
-│              API GATEWAY — FastAPI                  │
+│        API GATEWAY — FastAPI (Render)               │
 │  /analyze/text  /analyze/url  /analyze/image        │
 │  /analyze/full  /training/stats  /training/export   │
 └──────────────────────┬──────────────────────────────┘
@@ -43,7 +44,8 @@
                        │
 ┌──────────────────────▼──────────────────────────────┐
 │           SERVICIOS EXTERNOS                        │
-│  Google Fact Check │ Google Safe Browsing           │
+│  HF Inference API (RoBERTa) │ Google Fact Check     │
+│  OCR.space │ Google Safe Browsing                   │
 │  URLhaus │ OpenPhish │ PhishTank                    │
 └─────────────────────────────────────────────────────┘
 ```
@@ -53,43 +55,54 @@
 ## Fase 1 — Análisis de texto (NLP)
 
 ### Descripción
-Clasifica un texto en español como FAKE (desinformación) o REAL (legítimo) usando un modelo de lenguaje RoBERTa fine-tuned para fake news en español.
+Clasifica un texto en español como FAKE (desinformación) o REAL (legítimo) usando el modelo RoBERTa `Narrativaai/fake-news-detection-spanish`.
 
-### Modelo utilizado
-- `Narrativaai/fake-news-detection-spanish` (Hugging Face)
-- Carga diferida (lazy loading): se instancia solo en la primera llamada
-- Truncado automático a 512 tokens
+### Estrategia de inferencia (3 niveles en cascada)
 
-### Pseudocódigo
+En producción el modelo no se carga localmente para no exceder los límites de RAM del servidor. En su lugar se usa la **Hugging Face Inference API**, que corre el mismo modelo en los servidores de Hugging Face.
 
 ```
 FUNCIÓN classify_text(texto):
     SI texto está vacío:
         RETORNAR {label: "REAL", confidence: 0.0, risk_level: "bajo"}
 
-    pipeline ← cargar_modelo_roberta()  // lazy loading
+    // Estrategia 1: Hugging Face Inference API (producción)
+    SI HF_TOKEN configurado:
+        resultado ← POST https://api-inference.huggingface.co/models/
+                         Narrativaai/fake-news-detection-spanish
+                    body: {inputs: texto[:2000]}
 
-    SI pipeline no disponible:
-        RETORNAR fallback_heuristico(texto)
+        SI respuesta 503 (modelo dormido en HF):
+            esperar 10s y reintentar
 
-    resultado ← pipeline(texto[:2000])
-    etiqueta  ← normalizar_etiqueta(resultado.label)
-        // LABEL_1, 1, FAKE, FALSO → "FAKE"
-        // resto → "REAL"
+        SI respuesta OK:
+            label     ← normalizar(resultado.label)
+            confianza ← resultado.score
+            RETORNAR {label, confidence, risk_level,
+                      inference: "huggingface_api"}
 
-    confianza ← resultado.score
+    // Estrategia 2: pipeline local (desarrollo)
+    pipeline ← cargar_modelo_roberta_local()
+    SI pipeline disponible:
+        resultado ← pipeline(texto[:2000])
+        RETORNAR {label, confidence, risk_level, inference: "local"}
 
-    SI etiqueta == "FAKE":
-        SI confianza > 0.85 → risk_level = "alto"
-        SI confianza >= 0.60 → risk_level = "medio"
-        SI confianza < 0.60  → risk_level = "bajo"
-    SINO:
-        risk_level = "bajo"
-
-    RETORNAR {label, confidence, risk_level, source: "nlp"}
+    // Estrategia 3: fallback heurístico
+    RETORNAR fallback_heuristico(texto)
 ```
 
-### Fallback heurístico (cuando el modelo no está disponible)
+### Mapeo de confianza a nivel de riesgo
+
+```
+SI etiqueta == "FAKE":
+    SI confianza > 0.85  → risk_level = "alto"
+    SI confianza >= 0.60 → risk_level = "medio"
+    SI confianza < 0.60  → risk_level = "bajo"
+SINO:
+    risk_level = "bajo"
+```
+
+### Fallback heurístico (cuando HF API y pipeline local fallan)
 
 ```
 FUNCIÓN fallback_heuristico(texto):
@@ -115,15 +128,17 @@ Verifica si una afirmación ha sido investigada por organizaciones periodística
 
 ```
 FUNCIÓN verify_claim(texto):
-    SI GOOGLE_API_KEY configurada:
+    SI GOOGLE_FACTCHECK_KEY configurada:
         resultado ← google_factcheck_api(texto, idioma="es")
 
         SI hay resultados:
-            rating ← resultado.claimReview[0].textualRating
+            rating      ← resultado.claimReview[0].textualRating
+            verificador ← resultado.claimReview[0].publisher.name
+            fuente      ← resultado.claimReview[0].url
 
             SI rating contiene ["falso", "false", "misleading", "engaño"]:
                 RETORNAR {veredicto: "FALSO", confianza: 0.85,
-                          fuente: url, verificador: nombre_medio,
+                          verificador, fuente,
                           source: "google_factcheck"}
 
             SI rating contiene ["verdadero", "true", "correcto"]:
@@ -137,6 +152,14 @@ FUNCIÓN verify_claim(texto):
         // peso doble para fuentes confiables (andina.pe, rpp.pe, bbc.com)
 
     RETORNAR {veredicto, confianza, source: "fact_check_ddg"}
+```
+
+### Información mostrada al usuario cuando hay fact-check confiable
+
+```
+• ❌ Verificación: FALSO (85% confianza) — verificado por ColombiaCheck
+  "De nuevo, la tecnología 5G no es la causante del COVID-19"
+  🔗 https://colombiacheck.com/...
 ```
 
 ---
@@ -172,9 +195,7 @@ FUNCIÓN check_blacklist(dominio):
 
 ```
 FUNCIÓN check_url_external(url):
-    resultados ← []
-
-    // 4 fuentes en paralelo, degradación elegante si no hay API key
+    // 4 fuentes, degradación elegante si no hay API key
     resultados += google_safe_browsing(url)   // MALWARE, PHISHING
     resultados += urlhaus_abusedb(url)         // malware activo
     resultados += openphish_feed(url)          // caché local, TTL 1h
@@ -192,7 +213,6 @@ FUNCIÓN check_url_external(url):
 ```
 FUNCIÓN analyze_url(url):
     dominio ← extraer_dominio(url)
-        // quitar https://, www., puerto
 
     // Paso 1: blacklist interna
     SI check_blacklist(dominio) → RETORNAR con source="blacklist"
@@ -201,10 +221,6 @@ FUNCIÓN analyze_url(url):
     SI check_url_external(url).is_malicious → RETORNAR con source="external"
 
     // Paso 3: similitud Levenshtein contra ~45 dominios legítimos peruanos
-    // (BCP, BBVA, SUNAT, RENIEC, El Comercio, RPP, Yape, etc.)
-    mejor_similitud ← 0.0
-    mejor_dominio   ← null
-
     PARA cada dominio_legitimo en DOMINIOS_LEGITIMOS:
         sim ← max(
             similitud_levenshtein(dominio, dominio_legitimo),
@@ -212,14 +228,9 @@ FUNCIÓN analyze_url(url):
             bonus_prefijo(dominio, dominio_legitimo)
                 // si "bcp" es prefijo de "bcp-descuentos" → score 0.65–0.90
         )
-        SI sim > mejor_similitud:
-            mejor_similitud ← sim
-            mejor_dominio   ← dominio_legitimo
 
-    SI mejor_similitud >= 0.70 Y dominio != mejor_dominio:
-        is_suspicious ← true
-        SI mejor_similitud >= 0.85 → risk_level = "alto"
-        SI mejor_similitud >= 0.70 → risk_level = "medio"
+    SI mejor_similitud >= 0.85 → risk_level = "alto"
+    SI mejor_similitud >= 0.70 → risk_level = "medio"
 
     RETORNAR {is_suspicious, closest_domain, similarity, risk_level,
               source: "levenshtein"}
@@ -230,35 +241,40 @@ FUNCIÓN analyze_url(url):
 ## Fase 4 — OCR (análisis de imágenes)
 
 ### Descripción
-Extrae el texto visible de una imagen para analizarlo con NLP y detectar URLs en él.
+Extrae el texto visible de una imagen usando **OCR.space API** (servicio externo). No requiere instalación de Tesseract en el servidor, lo que permite despliegue en entornos con recursos limitados.
+
+### Cambio respecto al diseño original
+El diseño inicial usaba Tesseract instalado localmente con Pillow para preprocesamiento. En producción se migró a OCR.space API para eliminar la dependencia de binarios del sistema operativo en Render.
 
 ### Pseudocódigo
 
 ```
 FUNCIÓN extract_text_from_image(imagen_bytes):
-    imagen ← Image.open(imagen_bytes)
+    SI OCR_SPACE_KEY no configurada:
+        RETORNAR error("OCR_SPACE_KEY no configurada")
 
-    // Preprocesamiento para mejorar calidad OCR
-    imagen ← convertir_escala_grises(imagen)
-    imagen ← aumentar_contraste(imagen, factor=2.0)
-    imagen ← aumentar_nitidez(imagen, factor=2.0)
-    SI ancho(imagen) < 800px:
-        imagen ← escalar(imagen, ancho=800px)  // LANCZOS
+    // Codificar imagen en base64
+    image_b64  ← base64.encode(imagen_bytes)
+    mime_type  ← detectar_mime(imagen_bytes)  // por magic bytes
+    image_data ← "data:{mime_type};base64,{image_b64}"
 
-    // Extracción de texto
-    config_tesseract ← "--oem 3 --psm 3 -l spa"
-        // oem 3 = motor LSTM
-        // psm 3 = segmentación automática de página
-        // spa   = idioma español
-    texto ← tesseract.image_to_string(imagen, config)
+    // Llamar a OCR.space API
+    respuesta ← POST https://api.ocr.space/parse/image
+        body: {
+            base64image: image_data,
+            language: "spa",       // español
+            OCREngine: 2,          // motor más preciso
+            scale: true,           // mejora imágenes pequeñas
+            detectOrientation: true
+        }
+        headers: {apikey: OCR_SPACE_KEY}
 
-    // Post-procesamiento
-    texto ← limpiar_espacios_multiples(texto)
-    has_text ← len(texto sin espacios) >= 10
-    urls_encontradas ← detectar_urls_regex(texto)
-    confianza ← min(1.0, len(texto) / 200)  // heurística por longitud
+    texto ← respuesta.ParsedResults[0].ParsedText
+    has_text     ← len(texto sin espacios) >= 10
+    urls_found   ← detectar_urls_regex(texto)
+    confianza    ← min(1.0, len(texto) / 200)
 
-    RETORNAR {extracted_text, has_text, confidence, urls_found}
+    RETORNAR {extracted_text, has_text, confidence, urls_found, source: "ocr"}
 ```
 
 ---
@@ -266,7 +282,7 @@ FUNCIÓN extract_text_from_image(imagen_bytes):
 ## Fase 5 — Orquestador principal (/analyze/full)
 
 ### Descripción
-Endpoint que recibe texto, URL e imagen de forma simultánea y ejecuta todos los módulos que correspondan. Es el endpoint principal usado por el bot de WhatsApp y la extensión de Chrome.
+Endpoint principal usado por el bot de WhatsApp y la extensión de Chrome. Recibe texto, URL e imagen simultáneamente y ejecuta todos los módulos correspondientes.
 
 ### Pseudocódigo
 
@@ -277,8 +293,8 @@ FUNCIÓN analyze_full(texto=null, url=null, imagen_base64=null):
 
     // Análisis de texto
     SI texto no vacío:
-        nlp_result  ← classify_text(texto)
-        fact_result ← verify_claim(texto)
+        nlp_result  ← classify_text(texto)       // HF API → RoBERTa
+        fact_result ← verify_claim(texto)         // Google Fact Check
         riesgos.agregar(nlp_result.risk_level)
         SI fact_result.veredicto == "FALSO":
             riesgos.agregar("alto" si confianza >= 0.7 else "medio")
@@ -293,8 +309,7 @@ FUNCIÓN analyze_full(texto=null, url=null, imagen_base64=null):
 
     // Análisis de imagen
     SI imagen_base64 no vacía:
-        imagen_bytes ← base64.decode(imagen_base64)
-        ocr_result   ← extract_text_from_image(imagen_bytes)
+        ocr_result ← extract_text_from_image(base64.decode(imagen_base64))
         SI ocr_result.has_text:
             img_nlp  ← classify_text(ocr_result.extracted_text)
             img_fact ← verify_claim(ocr_result.extracted_text)
@@ -303,11 +318,9 @@ FUNCIÓN analyze_full(texto=null, url=null, imagen_base64=null):
                 img_url ← analyze_url(ocr_result.urls_found[0])
                 riesgos.agregar(img_url.risk_level)
 
-    // Calcular riesgo global (máximo de todos los riesgos)
+    // Calcular riesgo global
     overall_risk ← max(riesgos, orden: alto > medio > bajo > incierto)
-
-    // Generar mensaje amigable
-    mensaje ← format_response(resultados, canal)
+    mensaje      ← format_response(resultados, canal)
 
     RETORNAR {overall_risk_level, resultados..., formatted_message}
 ```
@@ -317,14 +330,14 @@ FUNCIÓN analyze_full(texto=null, url=null, imagen_base64=null):
 ## Fase 6 — Retroalimentación automática (Camino A)
 
 ### Descripción
-Cada análisis de texto que produce un veredicto confiable de Google Fact Check se guarda automáticamente como muestra de entrenamiento. La etiqueta proviene de organizaciones periodísticas, no de usuarios.
+Cada análisis de texto que produce un veredicto confiable de Google Fact Check se guarda automáticamente como muestra de entrenamiento. La etiqueta proviene de organizaciones periodísticas internacionales, no de usuarios — eliminando el riesgo de datos maliciosos.
 
 ### Condiciones para guardar una muestra
 
 | Condición | Valor requerido |
 |---|---|
 | Fuente del veredicto | `google_factcheck` (no fallback DuckDuckGo) |
-| Veredicto | Solo `FALSO` o `VERDADERO` |
+| Veredicto | Solo `FALSO` o `VERDADERO` — nunca `INCIERTO` |
 | Confianza | ≥ 0.80 |
 | Longitud del texto | 20–2000 caracteres |
 
@@ -332,50 +345,40 @@ Cada análisis de texto que produce un veredicto confiable de Google Fact Check 
 
 ```
 FUNCIÓN try_collect_sample(texto, fact_check_result):
-    // Validaciones de calidad
     SI fact_check_result.source != "google_factcheck": RETORNAR false
     SI fact_check_result.veredicto NOT IN {"FALSO", "VERDADERO"}: RETORNAR false
     SI fact_check_result.confianza < 0.80: RETORNAR false
     SI len(texto) < 20 OR len(texto) > 2000: RETORNAR false
 
-    // Mapear veredicto a etiqueta del modelo
     label ← "FAKE" si veredicto == "FALSO" else "REAL"
+    hash  ← SHA256(texto)
+    SI hash ya existe en training.db: RETORNAR false  // deduplicación
 
-    // Deduplicación
-    hash ← SHA256(texto)
-    SI hash ya existe en training.db: RETORNAR false
-
-    // Persistir en SQLite
     INSERT INTO training_samples (hash, texto, label, veredicto,
                                   confianza, verificador, fuente)
     RETORNAR true
-
-
-FUNCIÓN export_dataset(output_path):
-    filas ← SELECT * FROM training_samples ORDER BY created_at
-    PARA cada fila:
-        ESCRIBIR en JSONL: {text, label, veredicto, confianza, verificador}
-    RETORNAR archivo .jsonl listo para fine-tuning
 ```
 
-### Flujo completo de recolección
+### Flujo completo de recolección y fine-tuning
 
 ```
 Usuario envía texto
         ↓
-verify_claim(texto)
+verify_claim(texto) → Google Fact Check API
         ↓
 ¿veredicto FALSO/VERDADERO con confianza >= 0.80?
-    ├── NO  → descartado (sin efecto en el sistema)
-    └── SÍ  → guardar en training.db
+    ├── NO  → descartado silenciosamente
+    └── SÍ  → guardar en training.db (SQLite)
                     ↓
-              (acumulación continua)
+          (acumulación continua en producción)
                     ↓
-POST /training/export
+    POST /training/export → training_dataset.jsonl
                     ↓
-        training_dataset.jsonl
+    fine-tuning en Google Colab (GPU gratuita)
+    modelo base: Narrativaai/fake-news-detection-spanish
                     ↓
-    fine-tuning del modelo RoBERTa
+    publicar en Hugging Face Hub
+    actualizar HF_TOKEN en producción
 ```
 
 ---
@@ -383,24 +386,14 @@ POST /training/export
 ## Fase 7 — Formateo de respuestas
 
 ### Descripción
-Convierte los resultados técnicos en mensajes legibles, diferenciando por canal (WhatsApp usa markdown propio, la extensión de Chrome usa texto plano con emojis).
-
-### Niveles de riesgo y mensajes
+Convierte los resultados técnicos en mensajes legibles por canal.
 
 | Riesgo | WhatsApp | Extensión Chrome |
 |---|---|---|
-| Alto | 🔴 *¡CUIDADO!* con detalles del verificador y enlace | ⚠️ RIESGO ALTO: descripción corta |
-| Medio | 🟡 *Ten precaución* con recomendación de verificar | ⚡ RIESGO MEDIO: descripción corta |
+| Alto | 🔴 *¡CUIDADO!* + verificador + enlace fuente | ⚠️ RIESGO ALTO: descripción corta |
+| Medio | 🟡 *Ten precaución* + recomendación | ⚡ RIESGO MEDIO: descripción corta |
 | Bajo | 🟢 *Este contenido parece seguro* | ✅ RIESGO BAJO |
 | Incierto | 🔎 *No puedo verificar con certeza* | 🔎 NO SE PUEDE VERIFICAR |
-
-### Información mostrada cuando hay fact-check confiable
-
-```
-• ❌ Verificación: FALSO (85% confianza) — verificado por ColombiaCheck
-  "De nuevo, la tecnología 5G no es la causante del COVID-19"
-  🔗 https://colombiacheck.com/...
-```
 
 ---
 
@@ -416,19 +409,19 @@ Mensaje entrante
     │       ↓
     │   POST /analyze/image (multipart)
     │       ↓
-    │   OCR → NLP → (URL si hay en el texto)
+    │   OCR.space API → texto → NLP (HF API) → fact-check
     │
     ├── texto contiene URL
     │       ↓
     │   POST /analyze/full {text, url}
     │       ↓
-    │   NLP + Fact Check + Levenshtein simultáneo
+    │   NLP (HF API) + Fact Check + Levenshtein
     │
     └── solo texto
             ↓
         POST /analyze/text
             ↓
-        NLP + Fact Check
+        NLP (HF API) + Fact Check
 ```
 
 ### Extensión de Chrome
@@ -440,9 +433,9 @@ content.js recolecta todos los <a href>
     ↓
 ANALYZE_URLS_BATCH → background.js
     ↓
-analiza en grupos de 5 (no saturar backend)
+analiza en grupos de 5 — timeout: 60s
     ↓
-POST /analyze/url × N
+POST /analyze/url × N  →  Levenshtein + blacklist + fuentes externas
     ↓
 riesgo alto   → outline rojo + badge ⚠️ + tooltip
 riesgo medio  → outline naranja + badge 🟡 + tooltip
@@ -450,66 +443,79 @@ riesgo bajo   → sin cambio visual
 
 Clic derecho en texto o enlace
     ↓
-POST /analyze/full
+POST /analyze/full — timeout: 120s (carga modelo HF si está dormido)
     ↓
 overlay flotante con resultado
 ```
 
 ---
 
-## Estructura de archivos del backend
+## Estructura de archivos del proyecto
 
 ```
-backend/
-├── main.py                          # API FastAPI, 5 endpoints de análisis
-│                                    # + 2 endpoints de entrenamiento
-├── modules/
-│   ├── nlp.py                       # Clasificación fake news (RoBERTa)
-│   ├── levenshtein.py               # Detección typosquatting
-│   ├── ocr.py                       # Extracción texto de imágenes
-│   ├── fact_check.py                # Verificación Google FC + DDG
-│   ├── url_checker.py               # 4 fuentes externas (GSB, URLhaus, etc.)
-│   ├── formatter.py                 # Generación de mensajes por canal
-│   └── training_collector.py        # Recolección automática de muestras
-├── data/
-│   ├── dominios_legitimos.py        # Listas blanca y negra de dominios
-│   ├── training.db                  # SQLite con muestras acumuladas
-│   └── training_dataset.jsonl       # Dataset exportado para fine-tuning
-├── tests/
-│   ├── test_nlp.py
-│   ├── test_levenshtein.py
-│   ├── test_ocr.py
-│   └── test_e2e.py
-├── .env                             # API keys (no subir a GitHub)
-├── requirements.txt
-└── RETROALIMENTACION.md             # Documentación del Camino A
+anti-desinformacion/
+├── backend/
+│   ├── main.py                      # API FastAPI — 5 endpoints análisis
+│   │                                # + 2 endpoints entrenamiento
+│   ├── modules/
+│   │   ├── nlp.py                   # RoBERTa via HF Inference API
+│   │   ├── levenshtein.py           # Detección typosquatting
+│   │   ├── ocr.py                   # OCR via OCR.space API
+│   │   ├── fact_check.py            # Google Fact Check + DuckDuckGo
+│   │   ├── url_checker.py           # 4 fuentes externas
+│   │   ├── formatter.py             # Mensajes por canal
+│   │   └── training_collector.py    # Recolección automática muestras
+│   ├── data/
+│   │   ├── dominios_legitimos.py    # Listas blanca y negra de dominios
+│   │   ├── training.db              # SQLite (generado en runtime)
+│   │   └── training_dataset.jsonl   # Dataset exportado para fine-tuning
+│   ├── Procfile                     # Comando de arranque para Render
+│   ├── .python-version              # Fuerza Python 3.11
+│   ├── requirements.txt
+│   └── RETROALIMENTACION.md
+├── extension/
+│   ├── background.js                # Service worker — puente con backend
+│   ├── content.js                   # Escaneo de página + tooltips
+│   ├── popup.html / popup.js        # UI con 4 tabs
+│   ├── manifest.json                # Manifest V3
+│   └── icons/                       # 16, 48, 128, 512px
+├── whatsapp-bot/
+│   ├── index.js                     # Cliente whatsapp-web.js
+│   └── api_client.js                # Cliente axios al backend
+└── METODOLOGIA.md
 ```
 
 ---
 
 ## Variables de entorno requeridas
 
-| Variable | API | Gratuita | Requerida |
+| Variable | Servicio | Gratuita | Prioridad |
 |---|---|---|---|
-| `GOOGLE_FACTCHECK_KEY` | Google Fact Check Tools | Sí | Sí (core) |
+| `GOOGLE_FACTCHECK_KEY` | Google Fact Check Tools | Sí | Core |
+| `HF_TOKEN` | Hugging Face Inference API | Sí | Core |
+| `OCR_SPACE_KEY` | OCR.space | Sí | Core |
 | `GOOGLE_SAFE_BROWSING_KEY` | Google Safe Browsing v4 | Sí | Recomendada |
 | `URLHAUS_AUTH_KEY` | URLhaus / abuse.ch | Sí (registro) | Recomendada |
 | `PHISHTANK_APP_KEY` | PhishTank | Sí | Opcional |
 
-Sin ninguna key el sistema funciona en modo degradado: NLP, blacklist local, Levenshtein y OpenPhish (sin key) siguen activos.
+Sin `HF_TOKEN` el NLP usa el fallback heurístico de palabras clave. Sin las demás keys el sistema sigue operativo con blacklist local, Levenshtein y OpenPhish.
 
 ---
 
 ## Decisiones de diseño relevantes para el paper
 
-1. **Degradación elegante**: cada módulo externo puede fallar sin detener el sistema. Si Google Safe Browsing no tiene key, se omite y los demás continúan.
+1. **Inferencia remota del modelo NLP**: en producción el modelo RoBERTa se invoca via Hugging Face Inference API en lugar de cargarse localmente, eliminando el requisito de ~1.5GB de RAM en el servidor. El modelo usado es idéntico, solo cambia dónde corre.
 
-2. **Lazy loading del modelo NLP**: el modelo RoBERTa se carga solo cuando llega la primera petición, reduciendo el tiempo de arranque del servidor.
+2. **OCR como servicio externo**: se migró de Tesseract local a OCR.space API para evitar la instalación de binarios del sistema operativo en entornos cloud con recursos limitados.
 
-3. **Deduplicación por hash**: las muestras de entrenamiento se identifican por SHA-256 del texto limpio, evitando que la misma afirmación viral contamine el dataset con duplicados.
+3. **Degradación elegante en 3 niveles para NLP**: HF Inference API → pipeline local → heurística de palabras clave. El sistema nunca falla completamente.
 
-4. **Canal-aware formatting**: el mismo resultado técnico produce mensajes distintos según el canal. WhatsApp recibe markdown con emojis y lenguaje coloquial; la extensión recibe texto plano más conciso.
+4. **Retroalimentación automática sin intervención humana**: las etiquetas de entrenamiento provienen de organizaciones de fact-checking internacionales (Google Fact Check), no de usuarios, eliminando el riesgo de envenenamiento del dataset.
 
-5. **Riesgo máximo como agregador**: cuando hay múltiples señales de riesgo (NLP + URL + OCR), el sistema reporta el nivel más alto, adoptando el principio de precaución.
+5. **Deduplicación por hash SHA-256**: evita que afirmaciones virales (enviadas miles de veces) contaminen el dataset con duplicados.
 
-6. **Contexto peruano explícito**: la lista de dominios legítimos y la blacklist están construidas específicamente para el ecosistema digital peruano (BCP, BBVA, SUNAT, RENIEC, Yape, medios nacionales).
+6. **Canal-aware formatting**: el mismo resultado técnico produce mensajes distintos según el canal. WhatsApp recibe markdown con lenguaje coloquial para adultos mayores; la extensión Chrome recibe texto plano conciso.
+
+7. **Riesgo máximo como agregador**: cuando hay múltiples señales (NLP + URL + OCR), el sistema reporta el nivel más alto, adoptando el principio de precaución.
+
+8. **Contexto peruano explícito**: la blacklist y lista de dominios legítimos están construidas específicamente para el ecosistema digital peruano (BCP, BBVA, SUNAT, RENIEC, Yape, medios nacionales).
