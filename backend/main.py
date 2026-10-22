@@ -14,6 +14,7 @@ from modules.levenshtein import analyze_url
 from modules.ocr import extract_text_from_image
 from modules.formatter import format_response
 from modules.fact_check import verify_claim
+from modules.training_collector import init_db, try_collect_sample
 
 # ---------------------------------------------------------------------------
 # Inicialización de la app
@@ -27,6 +28,11 @@ app = FastAPI(
     ),
     version="1.0.0",
 )
+
+# Inicializar base de datos de muestras de entrenamiento al arrancar
+@app.on_event("startup")
+def startup_event():
+    init_db()
 
 # CORS — permite peticiones desde la extensión Chrome y el bot local
 app.add_middleware(
@@ -81,6 +87,30 @@ def health_check():
     return {"status": "ok", "version": "1.0.0"}
 
 
+@app.get("/training/stats", tags=["Entrenamiento"])
+def training_stats():
+    """
+    Retorna estadísticas del dataset de entrenamiento acumulado automáticamente.
+    """
+    from modules.training_collector import get_stats
+    return get_stats()
+
+
+@app.post("/training/export", tags=["Entrenamiento"])
+def training_export():
+    """
+    Exporta el dataset acumulado como archivo JSONL listo para fine-tuning.
+    """
+    from modules.training_collector import export_dataset
+    path = export_dataset()
+    stats = get_stats() if False else __import__("modules.training_collector", fromlist=["get_stats"]).get_stats()
+    return {
+        "message": "Dataset exportado correctamente",
+        "path": path,
+        "total_muestras": stats["total"],
+    }
+
+
 @app.post("/analyze/text", tags=["Análisis"])
 def analyze_text_endpoint(request: TextRequest):
     """
@@ -92,6 +122,12 @@ def analyze_text_endpoint(request: TextRequest):
         raise HTTPException(status_code=422, detail="El campo 'text' no puede estar vacío.")
 
     result = classify_text(request.text)
+    fact_result = verify_claim(request.text)
+
+    # Recolección automática si Google Fact Check devuelve veredicto confiable
+    try_collect_sample(request.text, fact_result)
+
+    result["fact_check"] = fact_result
     result["formatted_message"] = format_response(result, channel="api")
     return result
 
@@ -196,6 +232,9 @@ async def analyze_full_endpoint(request: FullRequest):
         if fact_result.get("veredicto") == "FALSO":
             conf = fact_result.get("confianza", 0)
             risks.append("alto" if conf >= 0.7 else "medio")
+
+        # Recolección automática si Google Fact Check devuelve veredicto confiable
+        try_collect_sample(request.text, fact_result)
 
     # Análisis de URL
     if request.url and request.url.strip():
