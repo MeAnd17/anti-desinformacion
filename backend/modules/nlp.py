@@ -9,6 +9,7 @@ Modelo: Narrativaai/fake-news-detection-spanish
 
 from __future__ import annotations
 
+import os
 from functools import lru_cache
 from typing import Optional
 
@@ -20,6 +21,10 @@ def _get_pipeline():
     """Carga el pipeline de clasificación de texto de forma perezosa (lazy loading)."""
     global _pipeline
     if _pipeline is None:
+        # En entornos con poca RAM (Render free tier), usar solo el fallback
+        if os.getenv("USE_FALLBACK_NLP", "").lower() == "true":
+            return None
+
         try:
             import transformers
             hf_pipeline = transformers.pipeline
