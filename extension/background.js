@@ -8,7 +8,7 @@
  *   4. Actuar como puente de mensajes entre content.js y popup.js
  */
 
-const BACKEND_URL = "http://localhost:8000";
+const BACKEND_URL = "https://tucuy-backend.onrender.com";
 const TIMEOUT_MS  = 20000;
 
 // ---------------------------------------------------------------------------
