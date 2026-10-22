@@ -1,84 +1,32 @@
 """
 Módulo NLP — Clasificación de fake news con RoBERTa en español.
 
-Usa el modelo pre-entrenado de HuggingFace para clasificar texto en español
-como FAKE (desinformación) o REAL (información legítima).
+Modelo: analuciahm/tucuy-fake-news-spanish (Narrativaai/fake-news-detection-spanish)
 
-Modelo: Narrativaai/fake-news-detection-spanish
+En producción (Render free) usa el clasificador heurístico por limitaciones
+de infraestructura. En entorno local con GPU/RAM suficiente carga el modelo completo.
 
-En producción (Render) usa la Hugging Face Inference API para no cargar
-el modelo en RAM local. En desarrollo local carga el modelo directamente.
-
-Requiere: HF_TOKEN en .env para usar la Inference API.
+Para activar el modelo completo localmente:
+  pip install transformers torch
+  # Asegurarse de NO tener USE_FALLBACK_NLP=true en .env
 """
 
 from __future__ import annotations
 
 import os
-import requests
 import logging
 from typing import Optional
 
 logger = logging.getLogger(__name__)
 
-# ---------------------------------------------------------------------------
-# Configuración
-# ---------------------------------------------------------------------------
+MODEL_NAME = "analuciahm/tucuy-fake-news-spanish"
 
-HF_TOKEN     = os.getenv("HF_TOKEN", "")
-MODEL_NAME   = "analuciahm/tucuy-fake-news-spanish"
-HF_API_URL   = f"https://api-inference.huggingface.co/models/{MODEL_NAME}"
-TIMEOUT_SECS = 30
-
-# Pipeline local (solo se usa si no hay HF_TOKEN)
+# Pipeline local (solo disponible con transformers + torch instalados)
 _pipeline = None
 
 
-# ---------------------------------------------------------------------------
-# Inferencia vía Hugging Face Inference API
-# ---------------------------------------------------------------------------
-
-def _classify_via_api(text: str) -> Optional[dict]:
-    """
-    Llama a la Hugging Face Inference API usando requests directo.
-    Prueba múltiples URLs para encontrar la que funciona.
-    """
-    urls = [
-        f"https://api-inference.huggingface.co/models/{MODEL_NAME}",
-        f"https://huggingface.co/api/inference-proxy/hf-inference/models/{MODEL_NAME}",
-    ]
-
-    headers = {"Authorization": f"Bearer {HF_TOKEN}"} if HF_TOKEN else {}
-
-    for url in urls:
-        try:
-            response = requests.post(
-                url,
-                headers=headers,
-                json={"inputs": text[:2000]},
-                timeout=TIMEOUT_SECS,
-            )
-            if response.status_code == 200:
-                data = response.json()
-                if isinstance(data, list) and len(data) > 0:
-                    results = data[0] if isinstance(data[0], list) else data
-                    best = max(results, key=lambda x: x["score"])
-                    logger.info(f"[NLP] HF API OK via {url}")
-                    return best
-            else:
-                logger.warning(f"[NLP] HF API {url} → {response.status_code}: {response.text[:100]}")
-        except Exception as e:
-            logger.warning(f"[NLP] HF API {url} falló: {e}")
-
-    return None
-
-
-# ---------------------------------------------------------------------------
-# Pipeline local (fallback si no hay HF_TOKEN)
-# ---------------------------------------------------------------------------
-
 def _get_pipeline():
-    """Intenta cargar el pipeline localmente — solo para desarrollo con GPU/RAM suficiente."""
+    """Intenta cargar el modelo localmente. Solo funciona con transformers instalado."""
     global _pipeline
     if _pipeline is None:
         if os.getenv("USE_FALLBACK_NLP", "").lower() == "true":
@@ -99,10 +47,6 @@ def _get_pipeline():
     return _pipeline
 
 
-# ---------------------------------------------------------------------------
-# Funciones de mapeo
-# ---------------------------------------------------------------------------
-
 def _map_risk_level(confidence: float, label: str) -> str:
     if label.upper() in ("FAKE", "LABEL_1", "1"):
         if confidence > 0.85:
@@ -121,24 +65,13 @@ def _normalize_label(raw_label: str) -> str:
     return "REAL"
 
 
-# ---------------------------------------------------------------------------
-# Función principal
-# ---------------------------------------------------------------------------
-
 def classify_text(text: str) -> dict:
     """
     Clasifica un texto como FAKE o REAL.
 
     Estrategia:
-      1. Si hay HF_TOKEN → usa Hugging Face Inference API (sin cargar modelo local)
-      2. Si no hay token  → intenta cargar el modelo localmente
-      3. Si falla todo   → fallback heurístico por palabras clave
-
-    Args:
-        text: Texto a clasificar.
-
-    Returns:
-        dict con label, confidence, risk_level, source, model.
+      1. Pipeline local con modelo RoBERTa (requiere transformers + torch)
+      2. Fallback heurístico por palabras clave (producción en Render free)
     """
     if not text or not text.strip():
         return {
@@ -147,32 +80,15 @@ def classify_text(text: str) -> dict:
             "model": MODEL_NAME, "error": "Texto vacío",
         }
 
-    # --- Estrategia 1: Hugging Face Inference API ---
-    if HF_TOKEN:
-        api_result = _classify_via_api(text)
-        if api_result:
-            label      = _normalize_label(api_result["label"])
-            confidence = round(float(api_result["score"]), 4)
-            risk_level = _map_risk_level(confidence, label)
-            return {
-                "label":      label,
-                "confidence": confidence,
-                "risk_level": risk_level,
-                "source":     "nlp",
-                "model":      MODEL_NAME,
-                "inference":  "huggingface_api",
-            }
-        logger.warning("[NLP] HF API falló, intentando pipeline local...")
-
-    # --- Estrategia 2: pipeline local ---
+    # Estrategia 1: pipeline local
     pipe = _get_pipeline()
     if pipe:
         try:
             raw_results = pipe(text[:2000])
-            best        = raw_results[0]
-            label       = _normalize_label(best["label"])
-            confidence  = round(float(best["score"]), 4)
-            risk_level  = _map_risk_level(confidence, label)
+            best       = raw_results[0]
+            label      = _normalize_label(best["label"])
+            confidence = round(float(best["score"]), 4)
+            risk_level = _map_risk_level(confidence, label)
             return {
                 "label":      label,
                 "confidence": confidence,
@@ -184,7 +100,7 @@ def classify_text(text: str) -> dict:
         except Exception as e:
             logger.warning(f"[NLP] Error en pipeline local: {e}")
 
-    # --- Estrategia 3: fallback heurístico ---
+    # Estrategia 2: fallback heurístico
     return _fallback_classify(text)
 
 
@@ -193,9 +109,10 @@ def _fallback_classify(text: str) -> dict:
     KEYWORDS_FAKE = [
         "cura milagrosa", "el gobierno oculta", "lo que no quieren que sepas",
         "medicina prohibida", "comparte antes de que borren",
-        "urgente", "no quieren que lo veas", "fake", "mentira",
-        "confirmado", "última hora", "exclusivo", "alerta máxima",
+        "urgente", "no quieren que lo veas", "mentira",
+        "última hora", "exclusivo", "alerta máxima",
         "haz clic aquí", "gana dinero", "premio", "ganaste", "seleccionado",
+        "no lo verás en las noticias", "esto es lo que ocultan",
     ]
     text_lower = text.lower()
     matches = sum(1 for kw in KEYWORDS_FAKE if kw in text_lower)
@@ -208,9 +125,11 @@ def _fallback_classify(text: str) -> dict:
         confidence, label, risk = 0.85, "REAL", "bajo"
 
     return {
-        "label": label, "confidence": confidence,
-        "risk_level": risk, "source": "nlp",
-        "model": "heuristic-fallback",
-        "inference": "fallback",
-        "note": "Modelo no disponible, usando heurística de palabras clave",
+        "label":      label,
+        "confidence": confidence,
+        "risk_level": risk,
+        "source":     "nlp",
+        "model":      "heuristic-fallback",
+        "inference":  "fallback",
+        "note":       "Modelo RoBERTa no disponible en este entorno. Usando heurística de palabras clave.",
     }
