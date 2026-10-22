@@ -41,9 +41,9 @@ let selectedImageMime   = null;
 
 async function checkServerStatus() {
   try {
-    const response = await fetch("http://localhost:8000/health", {
+    const response = await fetch("https://tucuy-backend.onrender.com/health", {
       method: "GET",
-      signal: AbortSignal.timeout(4000),
+      signal: AbortSignal.timeout(60000), // 60s — Render puede tardar en despertar
     });
     if (response.ok) {
       setStatus("online", "Servidor activo ✓");

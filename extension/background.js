@@ -9,7 +9,7 @@
  */
 
 const BACKEND_URL = "https://tucuy-backend.onrender.com";
-const TIMEOUT_MS  = 20000;
+const TIMEOUT_MS  = 60000;
 
 // ---------------------------------------------------------------------------
 // Comunicación con el backend
