@@ -202,7 +202,9 @@ def format_response(analysis_result: dict, channel: str = "whatsapp") -> str:
     source = analysis_result.get("source", "")
 
     # --- Análisis de texto / NLP puro ---
-    if source == "nlp" or "nlp" in analysis_result and "url_analysis" not in analysis_result:
+    # Si tiene fact_check con resultado concreto, usar el detalle completo
+    has_fact_check = "fact_check" in analysis_result and analysis_result["fact_check"] and analysis_result["fact_check"].get("veredicto") != "INCIERTO"
+    if source == "nlp" or ("nlp" in analysis_result and "url_analysis" not in analysis_result and not has_fact_check):
         nlp = analysis_result if source == "nlp" else analysis_result.get("nlp", {})
         confidence = int(nlp.get("confidence", 0) * 100)
         return templates[risk_level]["fake_news"].format(confidence=confidence)
@@ -317,19 +319,32 @@ def _build_detail(result: dict, channel: str) -> str:
         resumen   = (fc.get("resumen") or "")[:180]
         fuente    = fc.get("fuente") or ""
 
+        # Extraer nombre del verificador del resumen (formato: "título — Calificación: X (Fuente)")
+        verificador = ""
+        if resumen and "(" in resumen and resumen.endswith(")"):
+            verificador = resumen[resumen.rfind("(") + 1:-1].strip()
+
         if veredicto == "FALSO":
             prefix = "• ❌" if channel == "whatsapp" else "•"
-            lines.append(f"{prefix} Verificación web: FALSO ({confianza}% confianza)")
+            verificado_por = f" — verificado por *{verificador}*" if verificador and channel == "whatsapp" else (f" — verificado por {verificador}" if verificador else "")
+            lines.append(f"{prefix} Verificación: FALSO ({confianza}% confianza){verificado_por}")
             if resumen:
-                lines.append(f"  _{resumen}_" if channel == "whatsapp" else f"  {resumen}")
+                resumen_limpio = resumen[:resumen.rfind(" — Calificación")] if " — Calificación" in resumen else resumen
+                lines.append(f"  _{resumen_limpio[:150]}_" if channel == "whatsapp" else f"  {resumen_limpio[:150]}")
+            if fuente:
+                lines.append(f"  🔗 _{fuente}_" if channel == "whatsapp" else f"  Fuente: {fuente}")
         elif veredicto == "VERDADERO":
             prefix = "• ✅" if channel == "whatsapp" else "•"
-            lines.append(f"{prefix} Verificación web: CONFIRMADO ({confianza}%)")
+            verificado_por = f" — verificado por *{verificador}*" if verificador and channel == "whatsapp" else (f" — verificado por {verificador}" if verificador else "")
+            lines.append(f"{prefix} Verificación: CONFIRMADO ({confianza}%){verificado_por}")
             if resumen:
-                lines.append(f"  _{resumen}_" if channel == "whatsapp" else f"  {resumen}")
+                resumen_limpio = resumen[:resumen.rfind(" — Calificación")] if " — Calificación" in resumen else resumen
+                lines.append(f"  _{resumen_limpio[:150]}_" if channel == "whatsapp" else f"  {resumen_limpio[:150]}")
+            if fuente:
+                lines.append(f"  🔗 _{fuente}_" if channel == "whatsapp" else f"  Fuente: {fuente}")
         else:
             prefix = "• 🔎" if channel == "whatsapp" else "•"
-            lines.append(f"{prefix} Verificación web: sin resultados concluyentes")
+            lines.append(f"{prefix} Verificación: sin resultados concluyentes en bases de datos de fact-checking")
 
     if "nlp" in result:
         nlp = result["nlp"]

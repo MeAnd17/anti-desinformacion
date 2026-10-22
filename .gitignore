@@ -12,6 +12,10 @@ build/
 .env
 *.env
 
+# Base de datos y datasets generados (se crean en runtime)
+backend/data/training.db
+backend/data/training_dataset.jsonl
+
 # WhatsApp bot - sesión local
 whatsapp-bot/.wwebjs_auth/
 whatsapp-bot/.wwebjs_cache/
