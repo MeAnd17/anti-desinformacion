@@ -130,7 +130,16 @@ def analyze_text_endpoint(request: TextRequest):
     # Recolección automática si Google Fact Check devuelve veredicto confiable
     try_collect_sample(request.text, fact_result)
 
+    # El fact-check eleva el riesgo si encuentra veredicto FALSO confiable
+    if fact_result.get("veredicto") == "FALSO":
+        conf = fact_result.get("confianza", 0)
+        fact_risk = "alto" if conf >= 0.7 else "medio"
+        result["risk_level"] = _max_risk([result.get("risk_level", "bajo"), fact_risk])
+        result["label"] = "FAKE"
+
     result["fact_check"] = fact_result
+    result["source"] = "full"
+    result["overall_risk_level"] = result["risk_level"]
     result["formatted_message"] = format_response(result, channel="api")
     return result
 
