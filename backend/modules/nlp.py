@@ -26,7 +26,7 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 HF_TOKEN     = os.getenv("HF_TOKEN", "")
-MODEL_NAME   = "Narrativaai/fake-news-detection-spanish"
+MODEL_NAME   = "analuciahm/tucuy-fake-news-spanish"
 HF_API_URL   = f"https://api-inference.huggingface.co/models/{MODEL_NAME}"
 TIMEOUT_SECS = 30
 
