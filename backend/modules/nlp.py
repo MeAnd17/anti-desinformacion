@@ -40,31 +40,37 @@ _pipeline = None
 
 def _classify_via_api(text: str) -> Optional[dict]:
     """
-    Llama a Hugging Face usando InferenceClient (nuevo sistema de providers).
-    No requiere cargar el modelo en RAM local.
+    Llama a la Hugging Face Inference API usando requests directo.
+    Prueba múltiples URLs para encontrar la que funciona.
     """
-    try:
-        from huggingface_hub import InferenceClient
+    urls = [
+        f"https://api-inference.huggingface.co/models/{MODEL_NAME}",
+        f"https://huggingface.co/api/inference-proxy/hf-inference/models/{MODEL_NAME}",
+    ]
 
-        client = InferenceClient(
-            provider="hf-inference",
-            api_key=HF_TOKEN,
-        )
+    headers = {"Authorization": f"Bearer {HF_TOKEN}"} if HF_TOKEN else {}
 
-        result = client.text_classification(
-            text[:2000],
-            model=MODEL_NAME,
-        )
+    for url in urls:
+        try:
+            response = requests.post(
+                url,
+                headers=headers,
+                json={"inputs": text[:2000]},
+                timeout=TIMEOUT_SECS,
+            )
+            if response.status_code == 200:
+                data = response.json()
+                if isinstance(data, list) and len(data) > 0:
+                    results = data[0] if isinstance(data[0], list) else data
+                    best = max(results, key=lambda x: x["score"])
+                    logger.info(f"[NLP] HF API OK via {url}")
+                    return best
+            else:
+                logger.warning(f"[NLP] HF API {url} → {response.status_code}: {response.text[:100]}")
+        except Exception as e:
+            logger.warning(f"[NLP] HF API {url} falló: {e}")
 
-        # result es una lista de ClassificationOutput
-        if result:
-            best = max(result, key=lambda x: x.score)
-            return {"label": best.label, "score": best.score}
-        return None
-
-    except Exception as e:
-        logger.warning(f"[NLP] Error llamando HF API: {e}")
-        return None
+    return None
 
 
 # ---------------------------------------------------------------------------
