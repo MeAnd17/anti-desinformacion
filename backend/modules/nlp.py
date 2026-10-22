@@ -88,7 +88,7 @@ def _classify_via_api(text: str) -> Optional[dict]:
 # ---------------------------------------------------------------------------
 
 def _get_pipeline():
-    """Carga el pipeline localmente — solo para desarrollo."""
+    """Intenta cargar el pipeline localmente — solo para desarrollo con GPU/RAM suficiente."""
     global _pipeline
     if _pipeline is None:
         if os.getenv("USE_FALLBACK_NLP", "").lower() == "true":
@@ -104,7 +104,7 @@ def _get_pipeline():
             )
             print("[NLP] Modelo cargado correctamente.")
         except Exception as e:
-            print(f"[NLP] Error al cargar modelo local: {e}")
+            print(f"[NLP] Pipeline local no disponible: {e}")
             _pipeline = None
     return _pipeline
 
