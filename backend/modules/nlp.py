@@ -27,7 +27,7 @@ logger = logging.getLogger(__name__)
 
 HF_TOKEN     = os.getenv("HF_TOKEN", "")
 MODEL_NAME   = "Narrativaai/fake-news-detection-spanish"
-HF_API_URL   = f"https://router.huggingface.co/hf-inference/models/{MODEL_NAME}"
+HF_API_URL   = f"https://api-inference.huggingface.co/models/{MODEL_NAME}"
 TIMEOUT_SECS = 30
 
 # Pipeline local (solo se usa si no hay HF_TOKEN)
