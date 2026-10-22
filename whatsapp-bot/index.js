@@ -1,62 +1,74 @@
 /**
  * index.js — Bot de WhatsApp anti-desinformación
  *
- * Conecta a WhatsApp mediante whatsapp-web.js y analiza mensajes entrantes:
- *   - Texto plano   → módulo NLP (BETO fake news)
- *   - URLs          → módulo Levenshtein (typosquatting)
+ * El bot funciona como un chat directo. El usuario lo busca por número,
+ * le escribe, y le manda lo que quiere analizar:
+ *   - Texto plano   → módulo NLP (fake news)
+ *   - URL           → módulo Levenshtein + URL checker
  *   - Texto + URL   → análisis combinado (/analyze/full)
- *   - Imágenes      → módulo OCR + NLP
+ *   - Imagen        → OCR + NLP
+ *   - Mensaje reenviado → analiza el contenido del reenvío
  *
- * Responde con mensajes amigables formateados para adultos mayores.
+ * Solo responde mensajes directos (ignora grupos y broadcasts).
  */
 
-const { Client, LocalAuth, MessageMedia } = require("whatsapp-web.js");
+const { Client, LocalAuth } = require("whatsapp-web.js");
 const qrcode = require("qrcode-terminal");
 const { analyzeText, analyzeUrl, analyzeImage, analyzeFull } = require("./api_client");
 
 // ---------------------------------------------------------------------------
-// Constantes
+// Mensajes predefinidos
 // ---------------------------------------------------------------------------
 
-const MENSAJE_BIENVENIDA = `¡Hola! 👋 Soy tu asistente *AntiDesinformación* 🛡️
+const MSG_BIENVENIDA = `👋 ¡Hola! Soy el bot *AntiDesinformación* 🛡️
 
-Puedo ayudarte a verificar si un mensaje, enlace o imagen es seguro.
+Te ayudo a verificar si un mensaje, enlace o imagen es confiable.
 
-*¿Cómo usarme?*
-📝 *Texto:* Envíame el mensaje que quieres verificar
-🔗 *Enlace:* Pega el enlace sospechoso
-🖼️ *Imagen:* Envíame la captura de pantalla
+*¿Qué me podés enviar?*
+🔗 Un enlace o URL sospechosa
+📝 Un texto o noticia que quieras verificar
+🖼️ Una imagen o captura de pantalla
+📨 Un mensaje reenviado que te generó dudas
 
-Desarrollado para proteger a los ciudadanos de Lima Metropolitana 🇵🇪`;
+Simplemente mandámelo y te digo qué encontré.
 
-const MENSAJE_PROCESANDO = "🔍 Analizando el contenido... un momento por favor.";
+Escribí *ayuda* si tenés preguntas.`;
 
-const MENSAJE_ERROR_GENERICO =
-  "😔 Tuve un problema al analizar ese contenido. " +
-  "¿Puedes intentarlo de nuevo? Si el problema continúa, " +
-  "escribe *ayuda* para ver las instrucciones.";
+const MSG_AYUDA = `🆘 *¿Cómo usar el bot?*
 
-const MENSAJE_AYUDA = `🆘 *Instrucciones de uso:*
+1. *Enviá un enlace* → verifico si es seguro o sospechoso
+2. *Enviá un texto* → analizo si puede ser desinformación
+3. *Enviá una imagen* → extraigo el texto y lo analizo
+4. *Reenviá un mensaje* → analizo el contenido que te enviaron
 
-1️⃣ Envía cualquier texto sospechoso y te digo si es una noticia falsa
-2️⃣ Pega un enlace (URL) y verifico si es seguro
-3️⃣ Envía una imagen o captura de pantalla y extraigo el texto para analizarlo
-
-*Comandos especiales:*
-• Escribe *ayuda* para ver este menú
-• Escribe *hola* para el mensaje de bienvenida
+*Comandos:*
+• *hola* → ver mensaje de bienvenida
+• *ayuda* → ver estas instrucciones
 
 🛡️ Tu seguridad digital es nuestra prioridad.`;
 
-// Regex para detectar URLs en un texto
+const MSG_PROCESANDO = "🔍 Analizando... un momento.";
+
+const MSG_ERROR = `😔 No pude analizar ese contenido.
+
+Intentá de nuevo o escribí *ayuda* para ver cómo usarme.`;
+
+const MSG_SIN_CONTENIDO = `🤔 No encontré contenido para analizar.
+
+Podés enviarme:
+• Un enlace (https://...)
+• Un texto o noticia
+• Una imagen o captura`;
+
+// Regex para detectar URLs en texto
 const URL_REGEX =
   /(?:https?:\/\/|www\.)[a-zA-Z0-9\-._~:/?#[\]@!$&'()*+,;=%]+(?<![.,;:!?'"])/gi;
 
-// Set de números que ya recibieron el mensaje de bienvenida (en memoria)
+// Usuarios que ya recibieron la bienvenida (en memoria, se resetea al reiniciar)
 const usuariosConocidos = new Set();
 
 // ---------------------------------------------------------------------------
-// Inicialización del cliente WhatsApp
+// Cliente WhatsApp
 // ---------------------------------------------------------------------------
 
 const client = new Client({
@@ -82,23 +94,23 @@ const client = new Client({
 // ---------------------------------------------------------------------------
 
 client.on("qr", (qr) => {
-  console.log("\n[Bot] Escanea este código QR con tu WhatsApp:");
+  console.log("\n📱 Escaneá este QR con el WhatsApp del bot:");
   qrcode.generate(qr, { small: true });
   console.log("\nVe a WhatsApp → Dispositivos vinculados → Vincular dispositivo\n");
 });
 
 client.on("ready", () => {
-  console.log("✅ [Bot] Cliente WhatsApp listo y conectado.");
-  console.log("🛡️  Bot AntiDesinformación activo — esperando mensajes...\n");
+  console.log("✅ Bot conectado y listo.");
+  console.log("🛡️  Esperando mensajes directos...\n");
 });
 
 client.on("auth_failure", (msg) => {
-  console.error("❌ [Bot] Falló la autenticación:", msg);
-  console.error("   Elimina la carpeta .wwebjs_auth/ y vuelve a escanear el QR.");
+  console.error("❌ Falló la autenticación:", msg);
+  console.error("   Borrá la carpeta .wwebjs_auth/ y volvé a escanear el QR.");
 });
 
 client.on("disconnected", (reason) => {
-  console.warn("⚠️  [Bot] Desconectado:", reason);
+  console.warn("⚠️  Bot desconectado:", reason);
 });
 
 // ---------------------------------------------------------------------------
@@ -106,14 +118,11 @@ client.on("disconnected", (reason) => {
 // ---------------------------------------------------------------------------
 
 client.on("message", async (message) => {
-  // Ignorar mensajes del propio bot
+  // Solo mensajes directos — ignorar todo lo demás
   if (message.fromMe) return;
-  // Ignorar grupos
-  if (message.from.includes("@g.us")) return;
-  // Ignorar estados de WhatsApp (status@broadcast y cualquier broadcast)
-  if (message.from === "status@broadcast") return;
-  if (message.broadcast) return;
-  // Ignorar mensajes de sistema o notificaciones
+  if (message.from.includes("@g.us")) return;        // grupos
+  if (message.from === "status@broadcast") return;   // estados
+  if (message.broadcast) return;                     // broadcasts
   if (message.type === "e2e_notification") return;
   if (message.type === "notification_template") return;
   if (message.type === "call_log") return;
@@ -121,38 +130,51 @@ client.on("message", async (message) => {
   const sender = message.from;
   const body = (message.body || "").trim();
 
-  console.log(`[Bot] Mensaje de ${sender}: ${body.substring(0, 80)}${body.length > 80 ? "..." : ""}`);
+  console.log(`[${new Date().toLocaleTimeString()}] Mensaje de ${sender}: ${body.substring(0, 80)}${body.length > 80 ? "..." : ""}`);
 
-  // --- Bienvenida al primer contacto ---
+  // Bienvenida al primer mensaje
   if (!usuariosConocidos.has(sender)) {
     usuariosConocidos.add(sender);
-    await safeReply(message, MENSAJE_BIENVENIDA);
-    // Si el primer mensaje ya tiene contenido analizable, continuar procesando
-    if (!body) return;
+    await safeReply(message, MSG_BIENVENIDA);
+    // Si el primer mensaje ya tiene algo analizable, seguimos procesando
+    if (!body && !message.hasMedia) return;
   }
 
-  // --- Comandos especiales ---
+  // Comandos especiales
   const bodyLower = body.toLowerCase();
-  if (bodyLower === "hola" || bodyLower === "inicio" || bodyLower === "start") {
-    await safeReply(message, MENSAJE_BIENVENIDA);
-    return;
-  }
-  if (bodyLower === "ayuda" || bodyLower === "help" || bodyLower === "?") {
-    await safeReply(message, MENSAJE_AYUDA);
+
+  if (["hola", "inicio", "start", "hi", "buenas", "buenos dias", "buenas tardes", "buenas noches"].includes(bodyLower)) {
+    await safeReply(message, MSG_BIENVENIDA);
     return;
   }
 
-  // --- Imagen adjunta ---
-  if (message.hasMedia) {
+  if (["ayuda", "help", "?", "menu", "menú", "comandos"].includes(bodyLower)) {
+    await safeReply(message, MSG_AYUDA);
+    return;
+  }
+
+  // Imagen adjunta
+  if (message.hasMedia && ["image", "document"].includes(message.type)) {
     await handleImageMessage(message);
     return;
   }
 
-  // --- Texto con o sin URL ---
+  // Mensaje reenviado — usar el cuerpo del reenvío
+  if (message.hasQuotedMsg || message._data?.isForwarded) {
+    if (body) {
+      await handleTextMessage(message, body);
+      return;
+    }
+  }
+
+  // Texto o URL
   if (body) {
     await handleTextMessage(message, body);
     return;
   }
+
+  // No hay contenido reconocible
+  await safeReply(message, MSG_SIN_CONTENIDO);
 });
 
 // ---------------------------------------------------------------------------
@@ -160,37 +182,38 @@ client.on("message", async (message) => {
 // ---------------------------------------------------------------------------
 
 /**
- * Wrapper seguro para message.reply() que evita crashes del proceso.
+ * Responde un mensaje de forma segura sin crashear el proceso.
  */
 async function safeReply(message, text) {
   try {
     await message.reply(text);
   } catch (err) {
-    console.error("[Bot] Error al enviar respuesta:", err.message);
+    console.error("[Bot] Error al responder:", err.message);
   }
 }
 
 /**
- * Analiza un mensaje de texto. Si contiene URLs, usa el endpoint /analyze/full
- * para combinar análisis NLP + Levenshtein simultáneamente.
+ * Analiza texto. Si contiene URL usa el análisis combinado,
+ * si no, usa solo NLP.
  */
 async function handleTextMessage(message, text) {
-  const urlsEncontradas = text.match(URL_REGEX) || [];
+  const urls = text.match(URL_REGEX) || [];
+
+  await safeReply(message, MSG_PROCESANDO);
 
   try {
     let result;
 
-    if (urlsEncontradas.length > 0) {
-      // Hay texto + URL → análisis combinado
-      const primaryUrl = urlsEncontradas[0];
-      result = await analyzeFull({ text, url: primaryUrl });
+    if (urls.length > 0) {
+      // Texto con URL → análisis combinado
+      result = await analyzeFull({ text, url: urls[0] });
     } else {
       // Solo texto → NLP
       result = await analyzeText(text);
     }
 
     if (result.error) {
-      await safeReply(message, result.message || MENSAJE_ERROR_GENERICO);
+      await safeReply(message, result.message || MSG_ERROR);
       return;
     }
 
@@ -199,43 +222,40 @@ async function handleTextMessage(message, text) {
 
   } catch (err) {
     console.error("[Bot] Error en handleTextMessage:", err.message);
-    await safeReply(message, MENSAJE_ERROR_GENERICO);
+    await safeReply(message, MSG_ERROR);
   }
 }
 
 /**
- * Descarga la imagen adjunta, la envía al backend para OCR + NLP
- * y responde con el análisis.
+ * Descarga y analiza una imagen usando OCR + NLP.
  */
 async function handleImageMessage(message) {
-  try {
-    await safeReply(message, MENSAJE_PROCESANDO);
+  await safeReply(message, MSG_PROCESANDO);
 
+  try {
     const media = await message.downloadMedia();
 
     if (!media || !media.data) {
-      await safeReply(message, "😔 No pude descargar la imagen. ¿Puedes intentar enviarla de nuevo?");
+      await safeReply(message, "😔 No pude descargar la imagen. ¿La podés reenviar?");
       return;
     }
 
-    // Convertir base64 a Buffer
     const imageBuffer = Buffer.from(media.data, "base64");
     const mimeType = media.mimetype || "image/jpeg";
     const extension = mimeType.split("/")[1] || "jpg";
-    const filename = `image_${Date.now()}.${extension}`;
+    const filename = `img_${Date.now()}.${extension}`;
 
     const result = await analyzeImage(imageBuffer, mimeType, filename);
 
     if (result.error) {
-      await safeReply(message, result.message || MENSAJE_ERROR_GENERICO);
+      await safeReply(message, result.message || MSG_ERROR);
       return;
     }
 
-    // Si la imagen no tenía texto legible
     if (result.ocr && !result.ocr.has_text) {
       await safeReply(message,
-        "🖼️ Recibí tu imagen pero no encontré texto legible en ella.\n\n" +
-        "💡 Si la imagen tiene texto, asegúrate de que sea clara y bien iluminada."
+        "🖼️ Recibí tu imagen pero no encontré texto legible.\n\n" +
+        "Asegurate de que la imagen sea clara y el texto esté visible."
       );
       return;
     }
@@ -245,7 +265,7 @@ async function handleImageMessage(message) {
 
   } catch (err) {
     console.error("[Bot] Error en handleImageMessage:", err.message);
-    await safeReply(message, MENSAJE_ERROR_GENERICO);
+    await safeReply(message, MSG_ERROR);
   }
 }
 
@@ -254,20 +274,16 @@ async function handleImageMessage(message) {
 // ---------------------------------------------------------------------------
 
 /**
- * Formateador de fallback por si el backend no retorna formatted_message.
+ * Formato de fallback si el backend no devuelve formatted_message.
  */
 function formatFallback(result) {
-  const risk =
-    result.overall_risk_level ||
-    result.risk_level ||
-    "desconocido";
-
+  const risk = result.overall_risk_level || result.risk_level || "desconocido";
   const emojis = { alto: "🔴", medio: "🟡", bajo: "🟢" };
   const emoji = emojis[risk] || "⚪";
 
   return (
-    `${emoji} Nivel de riesgo: *${risk.toUpperCase()}*\n\n` +
-    "👉 Consulta a un familiar de confianza si tienes dudas."
+    `${emoji} *Nivel de riesgo: ${risk.toUpperCase()}*\n\n` +
+    "Si tenés dudas, consultá con alguien de confianza antes de compartir."
   );
 }
 
@@ -277,6 +293,6 @@ function formatFallback(result) {
 
 console.log("🚀 Iniciando Bot AntiDesinformación...");
 console.log(`   Backend: ${process.env.BACKEND_URL || "http://localhost:8000"}`);
-console.log("   Esperando código QR...\n");
+console.log("   Esperando QR para vincular...\n");
 
 client.initialize();
