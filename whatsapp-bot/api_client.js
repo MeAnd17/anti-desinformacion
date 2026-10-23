@@ -12,11 +12,11 @@
 const axios = require("axios");
 const FormData = require("form-data");
 
-// URL base del backend. Cambiar si se despliega en otro host.
-const BACKEND_URL = process.env.BACKEND_URL || "http://localhost:8000";
+// URL base del backend.
+const BACKEND_URL = process.env.BACKEND_URL || "https://tucuy-backend.onrender.com";
 
 // Tiempo máximo de espera por respuesta del backend (ms)
-const TIMEOUT_MS = 30000;
+const TIMEOUT_MS = 120000; // 2 minutos — Render puede tardar en despertar
 
 // ---------------------------------------------------------------------------
 // Cliente base
