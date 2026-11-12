@@ -38,10 +38,11 @@ def _extract_domain(url: str) -> str:
     """
     Extrae el dominio de una URL.
     Si no tiene esquema, agrega https:// para que urlparse funcione.
+    Decodifica Punycode (xn--) para detectar ataques homoglyph/IDN.
 
     Ejemplos:
         "https://bcp-descuentos.com/oferta" → "bcp-descuentos.com"
-        "bcp.com.pe"                        → "bcp.com.pe"
+        "https://xn--interbnk-66g.com"      → "interbаnk.com" → comparado como "interbank"
     """
     url = url.strip()
     if not url.startswith(("http://", "https://")):
@@ -53,6 +54,28 @@ def _extract_domain(url: str) -> str:
     # Eliminar "www."
     if domain.startswith("www."):
         domain = domain[4:]
+
+    # Decodificar Punycode (xn--) para detectar ataques de homoglyph/IDN
+    # Ej: xn--interbnk-66g.com → interbаnk.com (con 'а' cirílica)
+    # Al decodificar, la similitud Levenshtein detecta el ataque
+    if "xn--" in domain:
+        try:
+            parts = domain.split(".")
+            decoded_parts = []
+            for part in parts:
+                if part.startswith("xn--"):
+                    decoded_parts.append(part.encode("ascii").decode("idna"))
+                else:
+                    decoded_parts.append(part)
+            decoded = ".".join(decoded_parts)
+            # Normalizar caracteres Unicode similares a ASCII (homoglyphs)
+            import unicodedata
+            normalized = unicodedata.normalize("NFKD", decoded)
+            ascii_domain = normalized.encode("ascii", "ignore").decode("ascii")
+            if ascii_domain:
+                domain = ascii_domain
+        except Exception:
+            pass  # Si falla la decodificación, usar el dominio original
 
     # Eliminar puerto si existe
     domain = domain.split(":")[0]
